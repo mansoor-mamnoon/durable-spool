@@ -190,6 +190,152 @@ fn leftover_temporary_snapshot_is_not_committed() {
     assert_eq!(q.ok(&["list"]).matches("succeeded").count(), 2);
 }
 
+#[test]
+fn retry_backoff_once_and_eventual_success() {
+    let q = Queue::new();
+    q.ok(&["add", "--attempts", "3", "--backoff-ms", "400", "--", "/bin/sh", "-c",
+        "echo $DURABLE_SPOOL_JOB_ID:$DURABLE_SPOOL_ATTEMPT; test $DURABLE_SPOOL_ATTEMPT -ge 2"]);
+    q.ok(&["run", "--once"]);
+    assert!(q.ok(&["show", "1"]).contains("pending"));
+    q.ok(&["run", "--once"]);
+    assert!(!q.root.join("queue/logs/1.2.stdout").exists());
+    q.ok(&["run"]);
+    assert_eq!(fs::read(q.root.join("queue/logs/1.2.stdout")).unwrap(), b"1:2\n");
+    assert!(q.ok(&["show", "1"]).contains("succeeded"));
+}
+
+#[test]
+fn producers_and_cancellation_work_while_worker_is_busy() {
+    let q = Queue::new();
+    q.ok(&["add", "--", "/bin/sh", "-c", "touch started; while test ! -e release; do sleep 0.02; done"]);
+    let mut worker = q.worker(&["run"]);
+    wait_for(&q.root.join("started"));
+    q.ok(&["add", "--", "/bin/sh", "-c", "touch should-not-run"]);
+    q.ok(&["cancel", "2"]);
+    assert!(q.ok(&["show", "1"]).contains("running"));
+    fs::write(q.root.join("release"), b"").unwrap();
+    assert!(worker.wait().unwrap().success());
+    assert!(!q.root.join("should-not-run").exists());
+}
+
+#[test]
+fn recovery_exhaustion_and_signal_failure() {
+    let q = Queue::new();
+    // Fail log creation using a real directory, after the claim was committed.
+    q.ok(&["add", "--attempts", "1", "--", "/usr/bin/true"]);
+    fs::create_dir(q.root.join("queue/logs/1.1.stdout")).unwrap();
+    q.fail(&["run"], "directory");
+    assert!(q.ok(&["show", "1"]).contains("running"));
+    q.ok(&["recover"]);
+    assert!(q.ok(&["show", "1"]).contains("failed"));
+    q.ok(&["run"]);
+    q.ok(&["add", "--attempts", "1", "--", "/bin/sh", "-c", "kill -TERM $$"]);
+    q.ok(&["run"]);
+    assert!(q.ok(&["show", "2"]).contains("terminated by signal"));
+}
+
+#[test]
+fn storage_errors_do_not_acknowledge_mutations() {
+    let q = Queue::new();
+    q.ok(&["list"]);
+    fs::create_dir(q.root.join("queue/state.new")).unwrap();
+    q.fail(&["add", "--", "/usr/bin/true"], "directory");
+    assert_eq!(q.ok(&["list"]).lines().count(), 1);
+    fs::remove_dir(q.root.join("queue/state.new")).unwrap();
+    q.ok(&["add", "--", "/usr/bin/true"]);
+    assert!(q.ok(&["show", "1"]).contains("pending"));
+    let state = q.root.join("queue/state");
+    fs::remove_file(&state).unwrap();
+    fs::create_dir(&state).unwrap();
+    q.fail(&["list"], "directory");
+    let file = q.root.join("not-dir");
+    fs::write(&file, b"x").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_durable-spool"))
+        .arg("--queue").arg(file.join("child")).arg("list").output().unwrap();
+    assert!(!output.status.success());
+}
+
+fn rehash(bytes: &mut [u8]) {
+    let end = bytes.len() - 8;
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in &bytes[..end] { hash = (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3); }
+    bytes[end..].copy_from_slice(&hash.to_le_bytes());
+}
+
+#[test]
+fn invalid_but_checksummed_snapshots_are_rejected() {
+    let q = Queue::new();
+    q.ok(&["add", "--", "/usr/bin/true"]);
+    let path = q.root.join("queue/state");
+    let original = fs::read(&path).unwrap();
+    // Public v1 format: magic(8), next-id(8), count(8), id(8), status(1),
+    // attempts/max/backoff/ready(4*8), cwd field, result field, argc, argv fields.
+    let cwd_len = u64::from_le_bytes(original[65..73].try_into().unwrap()) as usize;
+    let result_len_offset = 73 + cwd_len;
+    let argc_offset = result_len_offset + 8;
+    let arg_len_offset = argc_offset + 8;
+    for (offset, replacement) in [
+        (0, vec![b'X']), (8, 99u64.to_le_bytes().to_vec()),
+        (16, 10_001u64.to_le_bytes().to_vec()), (24, 7u64.to_le_bytes().to_vec()),
+        (32, vec![255]), (33, 101u64.to_le_bytes().to_vec()),
+        (41, 0u64.to_le_bytes().to_vec()), (49, 60_001u64.to_le_bytes().to_vec()),
+        (65, u64::MAX.to_le_bytes().to_vec()), (73, vec![0]),
+        (argc_offset, 0u64.to_le_bytes().to_vec()),
+        (arg_len_offset, 1000u64.to_le_bytes().to_vec()), (arg_len_offset + 8, vec![0]),
+    ] {
+        let mut bad = original.clone();
+        bad[offset..offset + replacement.len()].copy_from_slice(&replacement);
+        rehash(&mut bad);
+        fs::write(&path, bad).unwrap();
+        q.fail(&["list"], "corrupt");
+    }
+    let mut trailing = original[..original.len() - 8].to_vec();
+    trailing.extend_from_slice(&[0; 9]);
+    rehash(&mut trailing);
+    fs::write(&path, trailing).unwrap();
+    q.fail(&["list"], "corrupt");
+    let mut empty_program = original.clone();
+    let arg_len = u64::from_le_bytes(empty_program[arg_len_offset..arg_len_offset+8].try_into().unwrap()) as usize;
+    empty_program.drain(arg_len_offset+8..arg_len_offset+8+arg_len);
+    empty_program[arg_len_offset..arg_len_offset+8].copy_from_slice(&0u64.to_le_bytes());
+    rehash(&mut empty_program);
+    fs::write(&path, empty_program).unwrap();
+    q.fail(&["list"], "corrupt");
+}
+
+#[test]
+fn missing_cwd_is_a_bounded_execution_failure() {
+    let q = Queue::new();
+    let cwd = q.root.join("gone");
+    fs::create_dir(&cwd).unwrap();
+    let output = q.command().current_dir(&cwd).args(["add", "--attempts", "1", "--", "/usr/bin/true"]).output().unwrap();
+    assert!(output.status.success());
+    fs::remove_dir(&cwd).unwrap();
+    q.ok(&["run"]);
+    let show = q.ok(&["show", "1"]);
+    assert!(show.contains("failed") && show.contains("spawn:"));
+}
+
+#[test]
+fn cli_missing_arguments_and_default_queue() {
+    let q = Queue::new();
+    for args in [vec![], vec!["--queue"], vec!["--queue", "x"], vec!["--help", "x"]] {
+        assert!(!Command::new(env!("CARGO_BIN_EXE_durable-spool")).current_dir(&q.root).args(args).output().unwrap().status.success());
+    }
+    for args in [
+        vec!["add", "--attempts"], vec!["add", "--attempts", "x", "--", "true"],
+        vec!["add", "--backoff-ms", "-1", "--", "true"], vec!["add", "--", ""],
+        vec!["add"], vec!["cancel", "x"], vec!["recover", "x"],
+    ] { assert!(!q.output(&args).status.success(), "{args:?}"); }
+    assert!(q.command().arg("--help").output().unwrap().status.success());
+    assert!(Command::new(env!("CARGO_BIN_EXE_durable-spool")).current_dir(&q.root)
+        .args(["list"]).output().unwrap().status.success());
+    assert!(q.root.join(".spool").is_dir());
+}
+
+// Unforced OS failures (disk full, fsync/rename/write errors after a successful open,
+// descriptor exhaustion, failed wait, poisoned hardware) are not simulated with
+// mocks. Real power-loss/storage-controller ordering needs a separate crash rig.
 // APFS rejects non-UTF-8 directory names (EILSEQ); exercise this on Linux.
 #[cfg(target_os = "linux")]
 #[test]
