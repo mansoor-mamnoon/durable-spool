@@ -485,9 +485,155 @@ fn cli_missing_arguments_and_default_queue() {
     assert!(q.root.join(".spool").is_dir());
 }
 
+fn snapshot_fixture(jobs: usize, argument_size: usize) -> Vec<u8> {
+    let mut bytes = b"DSPOOL01".to_vec();
+    bytes.extend_from_slice(&(jobs as u64 + 1).to_le_bytes());
+    bytes.extend_from_slice(&(jobs as u64).to_le_bytes());
+    for id in 1..=jobs {
+        bytes.extend_from_slice(&(id as u64).to_le_bytes());
+        bytes.push(0);
+        for value in [0u64, 3, 0, 0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        // cwd "/", empty result, argc=1, one nonempty program argument.
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.push(b'/');
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(&(argument_size as u64).to_le_bytes());
+        bytes.resize(bytes.len() + argument_size, b'x');
+    }
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    rehash(&mut bytes);
+    bytes
+}
+
+#[test]
+fn capacity_limits_reject_without_losing_existing_jobs() {
+    let q = Queue::new();
+    q.ok(&["list"]);
+    let path = q.root.join("queue/state");
+    // Real valid on-disk inputs, generated directly to avoid 10k fsyncs in CI.
+    fs::write(&path, snapshot_fixture(10_000, 1)).unwrap();
+    q.fail(&["add", "--", "/usr/bin/true"], "10000");
+    assert_eq!(q.ok(&["list"]).lines().count(), 10_001);
+    // 64 jobs with a one-MiB argument are too large overall. First exercise the
+    // decoder bound, then trim the final field to an exactly-full valid snapshot.
+    let mut full = snapshot_fixture(64, 1024 * 1024);
+    fs::write(&path, &full).unwrap();
+    q.fail(&["list"], "corrupt");
+    let excess = full.len() - 64 * 1024 * 1024;
+    let field_start = full.len() - 8 - 1024 * 1024 - 8;
+    full[field_start..field_start + 8]
+        .copy_from_slice(&(1024u64 * 1024 - excess as u64).to_le_bytes());
+    full.truncate(full.len() - 8 - excess);
+    full.extend_from_slice(&0u64.to_le_bytes());
+    rehash(&mut full);
+    fs::write(&path, &full).unwrap();
+    q.fail(&["add", "--", "/usr/bin/true"], "64 MiB");
+    assert_eq!(fs::read(&path).unwrap(), full);
+}
+
+#[test]
+fn filesystem_permission_errors_are_not_empty_queues() {
+    use std::os::unix::fs::PermissionsExt;
+    let q = Queue::new();
+    q.ok(&["add", "--", "/usr/bin/true"]);
+    let path = q.root.join("queue/state");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    let output = q.output(&["list"]);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    // Root bypasses discretionary permissions; this OS error is unreachable there.
+    let uid = Command::new("/usr/bin/id").arg("-u").output().unwrap();
+    let is_root = String::from_utf8_lossy(&uid.stdout).trim() == "0";
+    if !is_root {
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Permission denied"));
+    }
+    let parent = q.root.join("readonly");
+    fs::create_dir(&parent).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o500)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_durable-spool"))
+        .arg("--queue")
+        .arg(parent.join("queue"))
+        .arg("list")
+        .output()
+        .unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+    if !is_root {
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Permission denied"));
+    }
+}
+
+#[test]
+fn embedded_nul_in_cwd_is_rejected() {
+    let q = Queue::new();
+    q.ok(&["add", "--", "/usr/bin/true"]);
+    let path = q.root.join("queue/state");
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[74] = 0; // Keep the leading slash valid so the embedded-NUL check is reached.
+    rehash(&mut bytes);
+    fs::write(path, bytes).unwrap();
+    q.fail(&["list"], "corrupt");
+}
+
+#[test]
+fn cancellation_races_with_claim_without_lost_state() {
+    let q = Queue::new();
+    q.ok(&["list"]);
+    for round in 0..24 {
+        let marker = format!("executed-{round}");
+        let id = q.ok(&["add", "--", "/usr/bin/touch", &marker]);
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(q.root.join("queue/state.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        let mut worker = q.worker(&["run", "--once"]);
+        // Queue real lock contenders; no test hooks, altered production timing,
+        // or fake lock implementation. The accepted outcome is linearizable.
+        std::thread::sleep(Duration::from_millis(10));
+        let cancel = q
+            .command()
+            .args(["cancel", id.trim()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        drop(lock);
+        let cancelled = cancel.wait_with_output().unwrap().status.success();
+        assert!(worker.wait().unwrap().success());
+        assert_eq!(q.root.join(&marker).exists(), !cancelled);
+        let state = q.ok(&["show", id.trim()]);
+        assert!(state.contains(if cancelled { "cancelled" } else { "succeeded" }));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn excessive_argument_count_is_rejected() {
+    let q = Queue::new();
+    let output = q
+        .command()
+        .args(["add", "--", "/usr/bin/true"])
+        .args(std::iter::repeat_n("", 65_536))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("65536"));
+}
+
 // Unforced OS failures (disk full, fsync/rename/write errors after a successful open,
 // descriptor exhaustion, failed wait, poisoned hardware) are not simulated with
 // mocks. Real power-loss/storage-controller ordering needs a separate crash rig.
+// The encoder's >1-MiB-field guard cannot be reached through this CLI on the
+// supported systems: exec argument/path limits are smaller and the decoder rejects
+// oversized fields before mutation. macOS ARG_MAX also prevents the 65k-argv case.
+// Cancellation/claim and competing directory-creation branches depend on OS
+// scheduling; the race workload checks real outcomes without promising all timings.
 // APFS rejects non-UTF-8 directory names (EILSEQ); exercise this on Linux.
 #[cfg(target_os = "linux")]
 #[test]

@@ -118,3 +118,15 @@ cargo tree  # just durable-spool: zero dependencies
 All tests are real CLI/filesystem/process tests, including SIGKILL recovery,
 concurrent producers, worker exclusion, exact argv, retry limits, pending
 cancellation, corrupt snapshots, and log/storage failures. No mocks.
+
+For a runnable crash-recovery demonstration:
+
+```sh
+cargo test --test e2e killed_worker_requires_explicit_recovery_and_preserves_attempt_budget -- --exact --nocapture
+```
+
+Local macOS measurement: 18 applicable E2E tests passed; production-source coverage
+was 97.84% of lines and 95% of branches using nightly LLVM instrumentation. Two
+additional tests target Linux (non-UTF-8 paths and its larger argument budget).
+This is not a 100%-coverage claim: OS error paths, argument-size limits, and rare
+scheduling branches remain outside the measured coverage.
