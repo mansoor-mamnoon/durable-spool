@@ -1,5 +1,7 @@
 #![cfg(unix)]
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
+#[cfg(target_os = "linux")]
+use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
@@ -15,7 +17,9 @@ struct Queue {
 
 impl Queue {
     fn new() -> Self {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tmp").join(format!(
+        let base = std::env::var_os("DURABLE_SPOOL_TEST_TMP").map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target/e2e"));
+        let root = base.join(format!(
             "e2e-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&root).unwrap();
@@ -186,6 +190,8 @@ fn leftover_temporary_snapshot_is_not_committed() {
     assert_eq!(q.ok(&["list"]).matches("succeeded").count(), 2);
 }
 
+// APFS rejects non-UTF-8 directory names (EILSEQ); exercise this on Linux.
+#[cfg(target_os = "linux")]
 #[test]
 fn non_utf8_working_directory_is_preserved() {
     let q = Queue::new();
