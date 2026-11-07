@@ -44,7 +44,7 @@ There are no benchmarking-only changes to the queue. Each mutation writes a whol
 
 ## Recorded run
 
-Measured November 7, 2026 (UTC), using the release CLI from production source commit `57b2b0e` and benchmark harness commit `637fd65`. All **5,550 submitted jobs succeeded exactly once in these runs**, as reported by the queue's attempt counters; this is not a general exactly-once execution guarantee.
+Measured November 7, 2026 (UTC), using the release CLI from production source commit `57b2b0e` and benchmark harness commit `637fd65`. All **5,550 submitted jobs were recorded as succeeded on their first attempt**; this is not an exactly-once execution guarantee.
 
 | Jobs per fresh queue | Add median (ms) | Add p95 (ms) | Submit (jobs/s) | Drain (jobs/s) | Direct spawn median (ms) |
 | ---: | ---: | ---: | ---: | ---: | ---: |

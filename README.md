@@ -149,6 +149,18 @@ file and directory synchronization enabled. It checks that every queued job
 succeeded. Small no-op jobs expose queue overhead; real agent tasks add their own
 execution time. Whole-state snapshots make retained queue size important.
 
+On an M2 Pro / APFS laptop, five trials per size measured:
+
+| Jobs per batch | Median submit latency | Worker drain |
+| ---: | ---: | ---: |
+| 10 | 17.93 ms | 29.53 jobs/s |
+| 100 | 20.11 ms | 29.71 jobs/s |
+| 1,000 | 22.28 ms | 27.73 jobs/s |
+
+Submission latencies are pooled across growing queues; drain rates are median
+per-trial rates. Payload: `/usr/bin/true`, not an LLM task. These are shared-laptop
+measurements, not capacity guarantees or a comparison with other queues.
+
 ## Verify
 
 ```sh
