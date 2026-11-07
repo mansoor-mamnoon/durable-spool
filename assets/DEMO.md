@@ -9,8 +9,8 @@ writes the report. The demo reads both attempt logs and the final report.
 
 There is no hosted LLM, network call, or external service in this demonstration.
 “Agent” describes the caller's use case, not an actual model invocation. The
-three workspace checks in the report are illustrative fixture text, not real
-repository checks. The transient failure is explicitly simulated in Rust.
+report is a small illustrative artifact, not a claim of repository validation.
+The transient failure is explicitly simulated in Rust.
 No worker crash, terminal closure, or automatic crash recovery is demonstrated.
 Pending jobs survive their submitter; they do not execute without a worker.
 Run the worker in a separate terminal, terminal multiplexer, or supervised service

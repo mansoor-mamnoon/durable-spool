@@ -57,7 +57,7 @@ Wrote agent-report.txt (safe to repeat)
 
 $ durable-spool list
 ID	STATUS	ATTEMPTS	READY_AT_MS
-1	succeeded	2/3	1794023261346
+1	succeeded	2/3	1794023370505
 ```
 
 Per-attempt logs + explicit outcome. Not exactly-once.
@@ -69,7 +69,7 @@ The agent can return for the artifact.
 ```text
 $ cat agent-report.txt
 Local agent report
-All 3 workspace checks passed.
+Demo artifact ready for the agent.
 ```
 
 Idempotent task: repeat execution replaces the same file.

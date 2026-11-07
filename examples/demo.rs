@@ -31,7 +31,7 @@ fn task() {
         std::process::exit(75);
     }
     // Repeating this task replaces the same artifact with the same bytes.
-    fs::write("agent-report.txt", "Local agent report\nAll 3 workspace checks passed.\n")
+    fs::write("agent-report.txt", "Local agent report\nDemo artifact ready for the agent.\n")
         .expect("write report");
     println!("Wrote agent-report.txt (safe to repeat)");
 }
@@ -73,7 +73,7 @@ fn main() {
     let completed = cli(&binary, &scratch, &["list"]);
     assert!(completed.contains("succeeded\t2/3"));
     let report = capture(Command::new("cat").arg(scratch.join("agent-report.txt")));
-    assert_eq!(report, "Local agent report\nAll 3 workspace checks passed.\n");
+    assert_eq!(report, "Local agent report\nDemo artifact ready for the agent.\n");
 
     let scenes = [
         ("01 / QUEUE IT", "Your agent hands off a local task.",
