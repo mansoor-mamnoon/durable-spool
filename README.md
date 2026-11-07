@@ -21,7 +21,7 @@ manager.
 
 A real CLI walkthrough, with no model API or cloud account needed. The transient
 failure is deliberately injected to demonstrate retries; this is not a recording
-of an LLM session. [Transcript and reproduction instructions](assets/README.md).
+of an LLM session. [Transcript and reproduction instructions](assets/DEMO.md).
 
 ## For local coding agents
 
@@ -139,7 +139,15 @@ See [DESIGN.md](DESIGN.md) for the protocol, tradeoffs, research, and interview 
 - Logs have no quota or rotation. Watch disk space.
 - No timeout, process-tree termination, environment capture, or continuous daemon mode. Detached grandchildren are outside the job lifecycle.
 - A crash can leave a child alive. The worker lock excludes workers, not surviving command trees.
-- No physical power-cut tests or throughput claims. Do not use this MVP for payments or other non-idempotent critical actions.
+- No physical power-cut tests. The benchmarks below are local measurements, not throughput guarantees. Do not use this MVP for payments or other non-idempotent critical actions.
+
+## Benchmarks
+
+[Measured results, raw samples, and reproduction commands](BENCHMARKS.md).
+The Rust harness times actual CLI submissions and worker drains, with the normal
+file and directory synchronization enabled. It checks that every queued job
+succeeded. Small no-op jobs expose queue overhead; real agent tasks add their own
+execution time. Whole-state snapshots make retained queue size important.
 
 ## Verify
 
