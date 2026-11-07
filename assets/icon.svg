@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">durable-spool</title>
+  <desc id="desc">Three queued jobs on a dark rounded tile; the last carries a mint completion check.</desc>
+  <rect width="128" height="128" rx="28" fill="#0b1020"/>
+  <rect x="25" y="24" width="78" height="20" rx="6" fill="#7790b5"/>
+  <rect x="25" y="54" width="78" height="20" rx="6" fill="#7790b5"/>
+  <rect x="25" y="84" width="78" height="20" rx="6" fill="#7790b5"/>
+  <rect x="35" y="31" width="34" height="6" rx="3" fill="#0b1020"/>
+  <rect x="35" y="61" width="34" height="6" rx="3" fill="#0b1020"/>
+  <rect x="35" y="91" width="19" height="6" rx="3" fill="#0b1020"/>
+  <circle cx="94" cy="94" r="23" fill="#0b1020"/>
+  <circle cx="94" cy="94" r="19" fill="#70e1c1"/>
+  <polygon points="82,94 86,90 91,95 102,83 106,87 91,103" fill="#0b1020"/>
+</svg>
