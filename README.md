@@ -1,6 +1,10 @@
+<p align="center"><img src="assets/icon.svg" width="88" height="88" alt="durable-spool icon"></p>
+
 # durable-spool
 
-**Queue commands now. Run them later. Know what a crash means.**
+**Your agent can stop. Its queued work stays.**
+
+Queue commands now. Run them later. Know what a crash means.
 
 A small, dependency-free Rust command spool for one Unix machine. It stores work
 before acknowledging it, runs one command at a time, and keeps stdout/stderr for
@@ -10,6 +14,37 @@ Useful for local exports, media processing, build batches, and other **idempoten
 jobs that should outlive the terminal that submitted them. Submission is durable;
 execution still needs a foreground worker, a terminal multiplexer, or your service
 manager.
+
+## See it work
+
+![A local agent queues work; the worker retries a simulated transient failure and saves the result](assets/demo.gif)
+
+A real CLI walkthrough, with no model API or cloud account needed. The transient
+failure is deliberately injected to demonstrate retries; this is not a recording
+of an LLM session. [Transcript and reproduction instructions](assets/README.md).
+
+## For local coding agents
+
+Use this as a durable handoff between an agent deciding **what to run** and a
+worker actually running it. Queue a test command, regenerate a report, or process
+a batch of files. The submitting agent does not have to stay alive. A worker still
+must run separately; this is not an agent framework or an always-on service.
+
+```sh
+# From your project directory, the agent queues an idempotent check.
+durable-spool --queue "$HOME/agent-work" add -- cargo test --locked
+# Later, in another terminal (or under your service manager):
+durable-spool --queue "$HOME/agent-work" run
+durable-spool --queue "$HOME/agent-work" list
+cat "$HOME/agent-work/logs/1.1.stdout" # replace 1 with the returned job ID
+```
+
+Only enqueue trusted commands: this is not a sandbox for arbitrary model output.
+Inputs and executable contents can change between submission and execution;
+use a pinned checkout when reproducibility matters. Retry idempotent work, not
+payments, emails, or deployments with unprotected side effects. After a worker
+crash, inspect external effects and surviving children before authorizing
+`recover`. A successful `run` means the queue drained, not that every job succeeded.
 
 ## Start here
 
